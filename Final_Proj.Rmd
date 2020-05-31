@@ -1,0 +1,527 @@
+---
+title: "Paris_Air_Quality_Ozone"
+author: "Filipa Goujard"
+date: "5/31/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+  Air pollution is hard to escape, no matter where you live. It is the biggest environmental health risk in Europe - it can seriously affect your health and the environment. Even though air quality in Europe has improved over recent decades, the levels of air pollutants still exceed EU standards and the most stringent World Health Organization guidelines.
+  The World Health Organization (WHO), in their 2008 Report stated that Tropospheric Ozone (O3) causes approximately 22,000 premature deaths per year in 25 countries in the European Union.
+   
+
+```{r, echo=FALSE, out.width = "80%", fig.align="center"}
+download.file('https://static.independent.co.uk/s3fs-public/thumbnails/image/2014/03/17/17/eiffel-towers.jpg','E_Tower.jpg')
+
+knitr::include_graphics('E_Tower.jpg')
+```
+
+   *This combination of photos shows the Eiffel tower (R) in central Paris through a haze of pollution taken on March 14, 2014 and during clear weather (L) on August 17, 2012. ( Getty Images )*
+
+ 
+  Tropospheric ozone is a "secondary" pollutant because it is not emitted directly, but instead forms when percursor gases react in the presence of sunlight. During the summer season when the temperatures are warmer and there is more sunlight present, photochemical smog ("Summer smog") is the dominant type of smog formation.
+
+In this project, we will take a closer look at the ozone (O3) levels in Paris, France and how they can be modelled using other captors available data.
+
+
+## Project Overview
+
+The data set here presented was downloaded from AirParif (<https://www.airparif.asso.fr/telechargement/telechargement-station>) on May 24th, 2020, and was collected at the monitoring station located at the 3rd floor of the Eiffel Tower, in Paris, France (highest collection point available): 
+
+```{r, echo=FALSE, out.width = "40%", fig.align="center"}
+download.file('https://www.merveilles-du-monde.com/Tour-Eiffel/images/Visites/Troisieme-etage.jpg','3Floor.jpg')
+
+knitr::include_graphics('3Floor.jpg')
+```
+
+   *Top of the Eiffel Tower, where the data is collected*
+  
+  The main goal is to obtain a satisfactory regression model for O3 that will help predict the Ozone level measures when the monitoring station captors were down. This information could afterwards help make informative decisions about redundancy protocols to be implemented. For eg. while the captor was down, did the model predicted such ozone concentration levels that a warning or an alert should have been at the time? This could help justify expenditure for a secondary captor or increase maintenance budget for the following year, etc...
+
+At this station, 3 pollutants are tracked: SO2, NO2 and O3 concentrations in air (in microgrammes per cubic meter), measured hourly, and can go as back as 1999. The full dataset has 5 variables: Date, Hour, SO2, NO2 and O3; and 178536 entries. Not all pollutants were tracked from the beginning. The data available for SO2 (responsible for acid rains) is largely underrepresented compared to the other two pollutants.
+
+For the purpose of this project, only data from 2017 onwards was used for modeling, in order to use a set of data that reflects all major policies and mitigations strategies in place at this time. Currently, there is a classification system for vehicles in Paris, taking into account how polllutant the model is, so that when pollution gets to a certain alert level, allows authortities to block them from circulating.
+
+During exploratoy data, seasonality for the pollutants was observed, specially for NO2 which peaks at rush hours, and for O3 during spring and summer, boosted by the sunlight.
+Although NO2 is a percursor for O3, there is no linear correlation between these two variables. Several different refression models were tried out and two models stood out - K-Nearest Neighbors and Random Forest. Ramdom Forest has a high computation time compared to the other, nevertheless, its performace outshines all others. 
+
+The obtained R-squared for the predictions on the validation set (20% of data) was approximately **0.86** for the Random Forest Model. The steps taken to achieve this are explained in the next section.
+
+
+## Data Analaysis and Methodology 
+
+### Data import, cleaning, exploration and visualization
+
+In order to run this project, the following packages are required:
+```{r, message = FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(readr)) install.packages("readr", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(gridExtra)) install.packages("gridExtra", repos = "http://cran.us.r-project.org")
+```
+
+The data was downloaded on May 24th, 2020. It it public and free, there is only a prior validation step using your email account and it is sent to you through an email link for limited time download. I have put the original CSV file in the github repository.
+
+```{r, echo=FALSE, message = FALSE, warning=FALSE}
+url <- "https://github.com/fgoujard/Paris_Air/raw/master/19991008_20200524-EIFF3_auto.csv"
+dat <- read_csv2(url)
+download.file(url, "19991008_20200524-EIFF3_auto.csv")
+tempfile()
+tmp_filename <- tempfile()
+download.file(url, tmp_filename)
+Paris_data <- read_csv2(tmp_filename)
+rm(tmp_filename)
+head(Paris_data)
+```
+In this data set there are 5 columns - 3 pollutants measures (SO2, NO2, O3) and Date and time (hours). The units for all pollutant concentration is the same - microgrammes per cubic meter. We can already see from the first rows that some data is missing (NAs) and that not all pollutants have the same amount of data available. Here is a preview of the first rows of the data:
+
+```{r, echo = FALSE, message = FALSE, warning=FALSE}
+Paris_data <- Paris_data[-1,] # taking out the row with the units
+#translating column names
+colnames(Paris_data)<- c("Date","Hour","SO2","NO2", "O3")
+dim(Paris_data)
+head(Paris_data) %>% knitr::kable()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#formating columns type
+Paris_data <- Paris_data %>% mutate(Date = dmy(Date), SO2 = as.numeric(SO2), 
+                                    NO2 = as.numeric(NO2), O3 = as.numeric(O3))
+```
+
+We can now star a little exploring by checking how much "useful" data we have. In fact, not all pollutants started being tracked at the same time, and also, we can have downtime for captors for several reasons (malfunction, maintenance,...).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+is.na(Paris_data) %>% summary() %>% knitr::kable()
+```
+  
+  
+Here we can see that during this time period (from 1999 until now), over 70% of SO2 measurements (a pollutant responsible for acid rain) are NA, while there are only 12% for NO2 and less than 10% for O3. Looking closely at the data, it can be seen that SO2 tracking was halted for some time, which mainly explains why there is such a big proportion of missing data.  
+
+
+```{r, echo = FALSE, message = FALSE, warning=FALSE}
+p1 <- Paris_data %>% 
+  ggplot(aes(Date, SO2, color = SO2)) +
+  geom_point() +
+  geom_smooth() +
+  theme_classic() +
+  labs(x="Date", y = "SO2 in microgrammes/m3",
+       title = "SO2 concentration measures")
+
+p2 <- Paris_data %>% 
+  ggplot(aes(Date, NO2, color = NO2)) +
+  geom_point() +
+  geom_smooth() +
+  theme_classic() +
+  labs(x="Date", y = "NO2 in microgrammes/m3",
+       title = "NO2 concentration measures")
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris_data %>% 
+  group_by(Date) %>%
+  ggplot(aes(Date, O3, color = O3)) +
+  geom_point() +
+  geom_smooth() +
+  geom_hline(aes(yintercept=120)) +
+  geom_hline(aes(yintercept=180)) +
+  theme_classic() +
+  labs(x="Date", y = "O3 in microgrammes/m3",
+       title = "O3 concentration measures")
+  
+```
+
+
+
+  It is interesting to notice in the graph for ozone that there are some really high figures, even after the city of Paris started imposing pollution control measures, such as circulation restrictions. Note that a good air quality implies ozone levels under 120 microgrammes/m3 and that over 180 microgrammes/m3, an alert goes out and restriction measures are put in place to mitigate. These levels are for hourly measures, so for the mitigation strategies to work it is important that every hour we can get a measure.
+ 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris_data[which.max(Paris_data$O3),] %>% knitr::kable()
+```
+  
+  
+  The highest ozone concentration recorded at this station was on 7am July, 26th, 2012. The concentration, 262 microgrammes/m3 is more than two times what is considered the limit for good air quality. This date (July) is coherent with what is to be expected, since sunlight is a major factor for O3 formation. Theoretically, a seasonality would therefore be expected in the data, which we will now try to confirm with the data:
+  
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#summer highs, winter lows - sunny days
+Paris_data %>%
+  group_by(Date) %>%
+  ggplot(aes(month(Date), O3, color = O3)) +
+  geom_point() + 
+  theme_classic() +
+  labs(x="Month", y = "O3 in microgrammes/m3",
+       title = "03 concentration measures - Monthly profile")
+```
+
+These figures show that there is a correlation between O3 concentration with the most sunny months of the year (spring and summer). 
+  Seeing this, we will definitely use the date as an indirect predictor for weather conditions.
+  
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris_data %>%
+  ggplot(aes(Hour, O3, color = O3)) +
+  geom_point() +
+  geom_smooth() +
+  theme_classic() +
+  labs(x="Hour", y = "O3 in microgrammes/m3",
+       title = "03 concentration measures - Hourly profile")
+```
+  
+  
+In Paris, several policies were enforced over the years (the most constraining from 2016 onwards), aiming to reduce the traffic in the city center when certain levels of pollution are detected. At the same time, automotive constructors have also seen the allowed engine emissions levels decrease, making the pollution overall decrease as it can be seen here:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris_data %>%
+  group_by(Date) %>%
+  mutate(D_NO2 = mean(NO2)) %>%
+  ggplot(aes(Date, D_NO2, color = D_NO2)) +
+  geom_point() + 
+  geom_smooth() +
+  theme_classic() +
+  labs(x="Date", y = "Daily mean NO2 in microgrammes/m3",
+       title = "Daily mean NO2 concentration variation with time")
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris_data %>%
+  group_by(Date) %>%
+  mutate(D_O3 = mean(O3)) %>%
+  ggplot(aes(Date, D_O3, color = D_O3)) +
+  geom_point() + 
+  geom_smooth() +
+  theme_classic() +
+  labs(x="Date", y = "Daily mean O3 in microgrammes/m3",
+       title = "Daily mean O3 concentration variation with time")
+```
+
+  While NO2 seems to be slowly improving with time, on the contrary, average daily ozone concentration seems to slightly increase. This may seem counterintuitive, but other factors that are not upfront explicit in the data are in play, such as sunlight, and the last few years have been particularly hot/sunny.
+
+  This shows us that we won't find a simple straight linear model to predict ozone concentrations using only one of its precursors NO2, and that more elaborate models should be sought.
+
+  This is a rather large dataset, so we are limiting to current conditions (meaning, no major changes in policies that might lead to a change in the data correlation), from 2017 onwards (Data = Paris). We are also excluding the SO2, since it's not an ozone precursor. Restricted data set for project purposes dimension and preview:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris <- Paris_data %>% 
+  filter(year(Date) >="2017") %>% 
+  select(Date, Hour, NO2, O3) %>% 
+  na.omit()
+dim(Paris)
+head(Paris) %>% knitr::kable()
+```
+
+  Since this still leaves us with a rather large dataset, that will allow us to divide the data into a typical 80/20 - 80% of the data for training and 20% for validation. 
+  
+  Looking into the restricted dataset in the same way as with the larger set, we see that at least one point generating an alert level is included:
+  
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris[which.max(Paris$O3),] %>% knitr::kable()
+```
+  
+This information was well treated by the authorities and we can confirm in AirParif site (<https://www.airparif.asso.fr/alertes/historique>) in an alert was issued on this date (July 26th, 20218).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris %>%
+  group_by(Date) %>%
+  ggplot(aes(Date, O3, color = O3)) +
+  geom_point() + 
+  geom_smooth() +
+  theme_classic() +
+  labs(x="Date", y = "O3 in microgrammes/m3",
+       title = "O3 concentration variation from 2017 untill today")
+```
+
+  In the picture above, we can clearly see a "summer time" spike and a winter decrease in O3 concentrations.
+  
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris %>%
+  group_by(Date) %>%
+  ggplot(aes(Date, NO2, color = NO2)) +
+  geom_point() + 
+  geom_smooth() +
+  theme_classic() +
+  labs(x="Date", y = "NO2 in microgrammes/m3",
+       title = "NO2 concentration variation from 2017 untill today")
+```
+  
+The seasonal effect is less prononced but nontheless there, and inversely, for NO2. Traffic in summer months decreases and therefore NO2 emissions are lower.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris %>% 
+  filter(year(Date) == "2018") %>%
+  ggplot() +
+  geom_smooth(aes(Date,NO2, colour = "NO2")) +
+  geom_smooth(aes(Date, O3, colour = "O3")) +
+  theme_classic() +
+  labs(x="Date", y = "Pollutant in microgrammes/m3",
+       title = "Smoothed NO2 & O3 measures for 2018")
+```
+
+At a first glance, there doesn't seem to exist a linear correlation between these two pollutant measures, so other variables and / or more complex models have to be envisioned.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Paris %>% 
+  ggplot(aes(NO2,O3, color = year(Date))) +
+  geom_point() +
+  theme_classic() +
+  labs(x="NO2 (microgrammes/m3)", y = "O3 (microgrammes/m3)",
+       title = "NO2 & O3 measures for 2017-2020")
+```
+  
+  
+
+### Creating the Training and Validation Set for modeling
+
+The training and validation sets were defined using the caret package, setting the seed at 7 to ensure reproductability.
+
+```{r}
+#create validation + training  set
+## Validation set will be 20% of data (data set = Paris)
+set.seed(7, sample.kind="Rounding") # for reproductibility
+test_index <- createDataPartition(y = Paris$O3, times = 1, p = 0.2, list = FALSE)
+train_set <- Paris[-test_index,]
+validation <- Paris[test_index,]
+
+dim(train_set)
+dim(validation)
+```
+
+  This training set has enough data to train de models in a satisfactory way. We could improve slightly the results by using a 90/10 distribution between sets, but we rather have a significant sized validation set, to be sure to include enough points to catch the seasonal effect, abnormally high concentrations, etc....
+
+  It is also worth mentioning that, different numbers for set seed were tried out, and finaly, seed was set to 7 because ir provided a validation set that included some points of higher concentration of O3, and therefore being a subset most representative of the whole data. 
+  
+
+### Model training
+
+During this project several models were tried out. Data exploring and visualization above seemed to hint that the relationsip between O3 and one of its percursors measured, NO2, is non-linear. Also, there is some seasonality to the data, that we know is related to the sunlight and that we can catch inderectly using the date (summer months vs winter months). Traffic jams also affect NO2 concentrations by the hour, but NO2 isn't the only O3 percursor, but is the only one that we have available at this station. Taking everything into account, the best approach is to train the models using all the variables available.
+
+We will also use Repeated K-Fold Cross validation - this is, data will be split into k-folds, repeated a number of times, and the Final Model accuracy will be the mean of the number of repeats. In our case, the models will all use 10-fold cross validation with 3 repeats, as it can be seen in the *"ctrl"* parameter below.
+
+We have also observed, during the steps above, that data points can be very dispersed, and after several tries, we found that pre processing of the data to normalized it, improved our algorithms results. Here we will e using "center" and "scale".
+
+As for the models tested, we kept the Linear Regression Model just for reference and have tried different types of algorithms (Regression, Regularized, Instat-Based, Bayesian, Clustering, Artificial Neural Network, Ensemble algorithms). Here below are some of the algorithms tried that yielded the best results.  
+  
+  
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#########################################################################################
+####################################  Models  ###########################################
+#########################################################################################
+
+set.seed(7, sample.kind="Rounding") # for reproductibility
+ctrl <- trainControl(method="repeatedcv",repeats = 3, summaryFunction = defaultSummary) 
+#Repeated k-fold Cross Validation
+
+
+#Linear Model
+lmFit <- train(O3 ~ ., 
+               data = train_set, 
+               method = "lm", 
+               trControl=ctrl, 
+               preProc = c("center", "scale"))
+
+#K-Nearest Neighbors
+knnFit <- train(O3 ~ ., 
+                data = train_set, 
+                method = "knn", 
+                trControl=ctrl, 
+                tuneGrid = data.frame(k = seq(15, 25, 1)), 
+                preProc = c("center", "scale"))
+
+#Kernel Partial Least Squares
+kplsFit <- train(O3 ~ ., 
+                 data = train_set, 
+                 method = "kernelpls", 
+                 trControl=ctrl, 
+                 preProc = c("center", "scale"))
+
+#Random Forest
+rfFit <- train(O3 ~ ., 
+               data = train_set, 
+               method = "rf", 
+               trControl=ctrl, 
+               preProc = c("center", "scale"))
+
+#Bayesian Model Regularized Neural Network
+brnnFit <- train(O3 ~ ., 
+                 data = train_set, 
+                 method = "brnn", 
+                 trControl=ctrl, 
+                 preProc = c("center", "scale"))
+
+#Generalized Addictive Model using LOESS
+gLoessFit <- train(O3 ~ ., 
+                   data = train_set, 
+                   method = "gamLoess", 
+                   trControl=ctrl, 
+                   preProc = c("center", "scale"))
+```
+
+The results are summarized in the table below:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+results <- resamples(list(LM=lmFit, KNN=knnFit, KPLS=kplsFit, GAML = gLoessFit, 
+                          BRNN=brnnFit, RF=rfFit))
+
+summary(results) 
+```
+
+Using as metric the R-squared, our top models (with R-squared > 0.5) are: Random Forest (RF) and K-Nearest Neighbors (KNN).  
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# whisker plots to compare models
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+dotplot(results, scales=scales)
+```
+
+For the KNN Model, the number of neighbors was left to be optimized automatically, and the final model uses the minimum RMSE of this optimization (k = 18), as it can be seen below:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+plot(knnFit)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+knnFit$results %>% knitr::kable()
+knnFit$bestTune 
+```
+
+
+
+The Random Forest model yielded significatly better results than the KNN one. The Final Model Results are shown below:  
+  
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+rfFit$finalModel
+rfFit$results %>% knitr::kable()
+
+ggplot(varImp(rfFit))
+
+
+rf_res = resid(rfFit)
+
+ggplot() +
+  geom_point(aes(train_set$Date, rf_res), col = "#009999") +
+  geom_hline(aes(yintercept=0)) +
+    labs(x="Date", y = "Residuals",
+       title = "O3 - residuals - rfFit model")
+
+```
+
+A R-squared of 0.852 and 86.08% of Var explained is very satisfactory for making a prediction based only on the information the station is capable of providing.
+
+Date also seems to be more importante than NO2, which is logical since NO2 is one of O3 precursors but not the only one, and sunshine is essential to its formation (indirectly represented by the date).
+
+We shall now procede to test our model with the validation set in the next section, and see how our model performs.  
+  
+
+## Results
+
+We have defined y_hat as the predicted O3 concentrations for the validation set using the Random Forest Model, our most performant. The variable *y_hat* will designate the predicted O3 concentrations using our Random Forest model trained in the previous chapter.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+y_hat <- predict(rfFit, validation)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+validation %>% 
+  ggplot() +
+  geom_point(aes(O3, y_hat), col = "#009999") +
+  scale_x_continuous(limits = c(0, 200)) + 
+  scale_y_continuous(limits = c(0, 200)) +
+  labs(x="O3 measurements (microgrammes/m3)", y = "y_hat (predicted O3) (microgrammes/m3)",
+       title = " RF Model predicted vs O3 measures for the validation set")
+```
+
+As it can be seen, the results are quite good, most of the points aligned in the diagonal.  
+  The performance results obtained are summarised in the table below:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+res_rf <- as.data.frame(validation$O3) %>% 
+  add_column(as.data.frame(y_hat))
+
+colnames(res_rf) <- c("obs", "pred")
+
+defaultSummary(res_rf) %>% knitr::kable()
+
+```
+
+The results obtained for the validation set are quite sound compared to the training set, obtaining a very similar R-squared of 0.857.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot() +
+  geom_point(aes(validation$Date, validation$O3), col = "#003333") +
+  geom_point(aes(validation$Date, y_hat), col = "#009999") +
+  theme_classic() +
+  labs(x="Date", y = "Predicted O3 & O3 measured (microgrammes/m3)",
+       title = " RF Model predicted & O3 measured for the validation set")
+```
+  
+  Our predicted measures (in lighter green in the figure above) cover almost the entirety of the real measures (darker green), visually showing the goof fit of the model. As expected, the data points that represent abnormally high concentrations are the hardest to predict.
+
+  In the previous section, it was mentionned that setting the seed to 7 produced a validation set with some high concentration figures as well. In fact, if the seed is set to 1, the validation set obtained has nearly no points of abnormal O3 concentration, and a R-squared of 0.94 is obtained, which can be deceptive of the model's real performance.
+
+
+### Predicting missing values with our model
+
+Since we were able to get a satisfying model for 03 predictions, we will now use it to predict O3 concentrations that were NAs in the initial dataset (for the time frame of the model), but for whom we have the info the model requires - Date & NO2 concentration measures. 
+  We create a new dataset - miss_O3, that contains all points were the NO2 concentration is available to input our model, and the O3 is missing for an unknown reason (maintenance, damaged captor, accident,...), as previewed below:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+miss_O3 <- Paris_data %>% 
+  filter(is.na(O3) & !is.na(NO2) & year(Date) >= "2017") %>% 
+  select(Date, Hour, NO2)
+
+dim(miss_O3)
+head(miss_O3) %>% knitr::kable()
+```
+
+During almost 3 and a half year, there were 1638 times that the captor failed to send the O3 concentration information.
+
+We will use our best model, the Random Forest, to estimate the missing points to see if any of our estimates corresponds to a concenration such that an alert sohould have been issued. The maximum ozone concentration predicted was of:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+y_miss <- predict(rfFit, miss_O3)
+
+max(y_miss)
+
+miss_O3[which.max(y_miss),] %>% knitr::kable()
+
+pred_miss <- miss_O3 %>% add_column(as.data.frame(y_miss))
+
+ggplot() +
+  geom_point(aes(Paris$Date, Paris$O3), col = "#999999") +
+  geom_point(aes(pred_miss$Date, pred_miss$y_miss), col = "#009999") +
+  theme_classic() +
+  labs(x="Date", y = "O3 (measured & missing predicted) (microgrammes/m3)",
+       title = " RF Model missing predicted O3 & measured")
+```
+  
+  According to the model predictions, the alert level was not achieved (thankfully!) while the captors were down, but we can see that on June 26th, 2019, the O3 concentration level was already higher than what is judged to be good air quality (>120 microgrammes/m3). When checking the historic for alerts in Paris in AirParif Site (<https://www.airparif.asso.fr/alertes/historique>) we can see that an alert was sent 2 days later due to high O3 concentration. This is also confirmed by our original dataset, that records this alert O3 levels for June 28th, 2019, when the captors were back up again.  
+  
+  Using this alerts history we were also able to see that no alert for high ozone concentration was send out during the dates the sensors were down, which is in agreement with our model's predictions.
+
+
+
+## Conclusion
+
+  For this project we have used the data from the Eiffel Tower, Paris, France, station, that records hourly the conentration of 3 pollutants in the air - SO2, NO2, and O3. Its the main goal was to find a predictive model for O3 concentrations in air, using as predictors the data recorded by the same station.
+
+  Data cleaning, exploration and visualization were performed, allowing to gain some valuable insights such as an apparent lack of linear correlation between the variables, that the O3 concentration has a seasonal effect (summer / winter), the NO2 concentrations have time profiles coherent with traffic load (rush hours for peaks and summer months for lows), etc...
+
+  After dividing the data into training and validation sets, 6 models were trained and the results compared. The linearity non adequacy was confirmed and the only results with R-squared > 0.5 obtained were for KNN and Random Forest Models. The best result was obained for the Random Forest Model, with an R-squared of over 0.85 for the validation set, fullfilling the goal of this project. The model was sucessfully validated and used for prediction of missing values when the captors were down, giving very good results when checked up against the historic alert levels issued during the period.
+
+  The limitations for this model are inherent to the model type itself. Using a Random Forest model, we cannot do predictive work for the future, it can only be used within its boundaries. One way to get around this, it to update the data with the most recent values and re-train it after the update. To avoid training the model at every update, complete sets of future data (Date, NO2 and O3) can be used as new validation sets to check if the performance of the model is still good or not.
+
+
+
